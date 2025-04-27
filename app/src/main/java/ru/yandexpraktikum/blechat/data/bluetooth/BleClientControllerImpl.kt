@@ -1,6 +1,7 @@
 package ru.yandexpraktikum.blechat.data.bluetooth
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothGatt
 import android.bluetooth.BluetoothGattCallback
@@ -20,12 +21,15 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import ru.yandexpraktikum.blechat.R
 import ru.yandexpraktikum.blechat.domain.bluetooth.BleClientController
 import ru.yandexpraktikum.blechat.domain.model.Message
 import ru.yandexpraktikum.blechat.domain.model.ScannedBluetoothDevice
+import ru.yandexpraktikum.blechat.presentation.notifications.NotificationsHelper
 import ru.yandexpraktikum.blechat.utils.checkForConnectPermission
 import ru.yandexpraktikum.blechat.utils.notifyCharUUID
 import ru.yandexpraktikum.blechat.utils.serviceUUID
+import ru.yandexpraktikum.blechat.utils.writeCharUUID
 import java.nio.charset.Charset
 import javax.inject.Inject
 
@@ -34,6 +38,7 @@ class BleClientControllerImpl @Inject constructor(
     private val bluetoothAdapter: BluetoothAdapter?,
     private val locationManager: LocationManager,
     private val viewModelScope: CoroutineScope,
+    private val notificationsHelper: NotificationsHelper
 ): BleClientController {
 
     private val bleScanner by lazy {
@@ -68,7 +73,6 @@ class BleClientControllerImpl @Inject constructor(
                                 }
                             }
                         }
-
                     }
 
                     BluetoothGatt.STATE_DISCONNECTED -> {
@@ -113,6 +117,10 @@ class BleClientControllerImpl @Inject constructor(
         ) {
             if (characteristic?.uuid == notifyCharUUID) {
                 val message = String(characteristic.value, Charset.defaultCharset())
+                notificationsHelper.notifyOnMessageReceived(
+                    title = context.getString(R.string.new_message),
+                    message = message
+                )
                 viewModelScope.launch {
                     _scannedDevices.update { devices ->
                         devices.map {
@@ -134,7 +142,6 @@ class BleClientControllerImpl @Inject constructor(
             super.onCharacteristicChanged(gatt, characteristic)
         }
     }
-
 
     init {
         updateBluetoothState()
@@ -244,8 +251,34 @@ class BleClientControllerImpl @Inject constructor(
         return currentGattDevice != null
     }
 
+    @SuppressLint("HardwareIds")
     override suspend fun sendMessage(message: String, deviceAddress: String): Boolean {
-        TODO()
+        val service = currentGattDevice?.getService(serviceUUID)
+        val characteristic = service?.getCharacteristic(writeCharUUID)
+        return if (characteristic != null) {
+            characteristic.setValue(message.toByteArray(Charset.defaultCharset()))
+            context.checkForConnectPermission {
+                currentGattDevice?.writeCharacteristic(characteristic)
+                _scannedDevices.update { devices ->
+                    devices.map {
+                        if (it.address == deviceAddress) {
+                            it.copy(
+                                messages = it.messages + Message(
+                                    text = message,
+                                    senderAddress = bluetoothAdapter?.address ?: "",
+                                    isFromLocalUser = false
+                                )
+                            )
+                        } else {
+                            it
+                        }
+                    }
+                }
+            }
+            true
+        } else {
+            false
+        }
     }
 
     override fun closeConnection() {
